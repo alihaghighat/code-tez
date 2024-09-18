@@ -161,6 +161,156 @@ def sliding_window_with_top_correlations(df, window_size, target_size, target_st
     return windows_tensor, targets_tensor
 
 
+
+class StockLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, target_size, output_size, dropout=0.5, l2_lambda=0.01):
+        super(StockLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, target_size * output_size)
+        self.target_size = target_size
+        self.output_size = output_size
+        self.l2_lambda = l2_lambda  # L2 regularization lambda value
+    
+    def forward(self, x):
+        lstm_out, _ = self.lstm(x)
+        # گرفتن آخرین خروجی دنباله
+        out = self.fc(lstm_out[:, -1, :])  # فقط آخرین مقدار زمانی
+        return out.view(-1, self.target_size, self.output_size)
+
+    def l2_regularization_loss(self):
+        l2_loss = 0
+        for param in self.parameters():
+            if param.requires_grad and param.ndimension() > 1:  # Ignore bias terms
+                l2_loss += torch.norm(param, 2)
+        return self.l2_lambda * l2_loss
+
+# EarlyStopping Class
+class EarlyStopping:
+    def __init__(self, patience=10, min_delta=0):
+        self.patience = patience  # Number of epochs to wait for improvement
+        self.min_delta = min_delta  # Minimum change in loss to be considered as improvement
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+    
+    def check(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0  # Reset patience
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+# Function to train the model
+def train_model(model, train_loader, val_loader, num_epochs, device, optimizer, criterion, early_stopping):
+    for epoch in range(num_epochs):
+        model.train()  # Set the model to training mode
+        running_loss = 0.0
+        
+        # Training loop
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            # Forward pass
+            outputs = model(inputs)
+            loss = criterion(outputs, targets) + model.l2_regularization_loss()
+
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+
+        # Validation loss calculation
+        model.eval()  # Set the model to evaluation mode
+        val_loss = 0.0
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                val_loss += loss.item()
+
+        # Compute average loss for the epoch
+        avg_train_loss = running_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+
+        # Print average loss for training and validation
+        print(f'Epoch [{epoch+1}/{num_epochs}], Training Loss: {avg_train_loss:.10f}, Validation Loss: {avg_val_loss:.10f}')
+
+    
+
+# Function to test the model
+def test_model(model, test_loader, device):
+    model.eval()  # Change to eval mode to prevent dropout and batchnorm from being applied
+    test_loss = 0.0
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            test_loss += loss.item()  # Add loss for each batch
+
+    average_test_loss = test_loss / len(test_loader)  # Calculate average test loss
+    print(f'Test Loss: {average_test_loss:.10f}')
+    return average_test_loss  # Return average test loss
+
+
+# Function to test the model, plot actual vs predicted prices, and save the plot
+def test_model_and_plot(model, test_loader, device, criterion, save_path='test_loss_plot.png'):
+    model.eval()  # Set the model to evaluation mode
+    actual_prices = []
+    predicted_prices = []
+    test_loss = 0.0
+
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            # Forward pass to get predictions
+            outputs = model(inputs)
+            
+            # Calculate loss
+            loss = criterion(outputs, targets)
+            test_loss += loss.item()
+
+            # Store the actual and predicted prices for plotting
+            actual_prices.append(targets.cpu().numpy())  # Move to CPU and convert to numpy
+            predicted_prices.append(outputs.cpu().numpy())  # Move to CPU and convert to numpy
+
+    # Calculate average test loss
+    average_test_loss = test_loss / len(test_loader)
+
+    # Convert lists to numpy arrays for easier plotting
+    actual_prices = np.concatenate(actual_prices, axis=0)
+
+    predicted_prices = np.concatenate(predicted_prices, axis=0)
+    print(predicted_prices)
+    # اگر داده‌ها بعدهای اضافی دارند آن‌ها را حذف کنید
+    if predicted_prices.ndim > 2:
+        predicted_prices = predicted_prices.squeeze()  # حذف ابعاد اضافی
+    if actual_prices.ndim > 2:
+        actual_prices = actual_prices.squeeze()
+
+    # Plot actual vs predicted prices
+    plt.figure(figsize=(10, 6))
+    plt.plot(actual_prices, label='Actual Prices', color='blue')
+    plt.plot(predicted_prices, label='Predicted Prices', color='red')
+    plt.title(f'Actual vs Predicted Prices (Test Loss: {average_test_loss:.4f})')
+    plt.xlabel('Sample Index')
+    plt.ylabel('Price')
+    plt.legend()
+
+    # Save the plot to a file
+    plt.savefig(save_path)
+    plt.show()
+
+    print(f'Test Loss: {average_test_loss:.10f}')
+    return average_test_loss  # Return average test loss
 # Measure the time for split_stock_data
 print("Start split_stock_data ")
 start_time = time.time()
@@ -169,17 +319,20 @@ end_time = time.time()
 execution_time = end_time - start_time
 print(f"End split_stock_data, Execution time: {execution_time:.2f} seconds")
 
+window_size = 30  
+target_size = 1 
+step_size = 3 
 # Measure the time for sliding window with top correlations for train
 print("Start sliding window with top correlations for train")
 start_time = time.time()
 train_inputs, train_targets = sliding_window_with_top_correlations(
     df=train, 
-    window_size=180, 
-    target_size=1, 
+    window_size=window_size, 
+    target_size=target_size, 
     target_stock='AAPL', 
-    n=3, 
-    d=2, 
-    step_size=1
+    n=4, 
+    d=1, 
+    step_size=step_size
 )
 end_time = time.time()
 execution_time = end_time - start_time
@@ -190,12 +343,12 @@ print("Start sliding window with top correlations for validation")
 start_time = time.time()
 val_inputs, val_targets = sliding_window_with_top_correlations(
     df=val, 
-    window_size=180, 
-    target_size=1, 
+     window_size=window_size, 
+    target_size=target_size, 
     target_stock='AAPL', 
-    n=3, 
-    d=2, 
-    step_size=1
+    n=4, 
+    d=1, 
+    step_size=step_size
 )
 end_time = time.time()
 execution_time = end_time - start_time
@@ -206,13 +359,16 @@ print("Start sliding window with top correlations for test")
 start_time = time.time()
 test_inputs, test_targets = sliding_window_with_top_correlations(
     df=test, 
-    window_size=180, 
-    target_size=1, 
+     window_size=window_size, 
+    target_size=target_size, 
     target_stock='AAPL', 
-    n=3, 
-    d=2, 
-    step_size=1
+    n=4, 
+    d=1, 
+    step_size=step_size
 )
 end_time = time.time()
 execution_time = end_time - start_time
 print(f"End sliding window for test, Execution time: {execution_time:.2f} seconds")
+
+
+print(train_inputs[0],train_targets[0])

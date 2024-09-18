@@ -236,8 +236,8 @@ delay_day_target_stock=2
 train, val, test = split_stock_data(merged_df, 'AAPL',delay_day_target_stock)  
 print(val)
 window_size = 180  
-target_size = 5 
-step_size = 3     
+target_size = 1 
+step_size = 3    
 
 # Apply sliding window on training, validation, and test data
 train_inputs, train_targets = sliding_window(train, window_size, target_size, step_size)
@@ -350,4 +350,4 @@ def denormalize(data, min_value, max_value):
 train_model(model, train_loader, val_loader, num_epochs, device, optimizer, criterion, early_stopping)
 
 # Test the model and plot the results
-actuals, predictions = test_and_plot(model, test_loader, 'AAPL', device, criterion, dataframes, save_path='actual_vs_predicted_prices.png')
+actuals, predictions = test_and_plot(model, test_loader, 'AAPL', device, criterion, dataframes, save_path='actual_vs_predicted_prices_LSTM_One_stock_plot.png')
