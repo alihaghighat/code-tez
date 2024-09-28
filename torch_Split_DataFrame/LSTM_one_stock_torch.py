@@ -36,48 +36,81 @@ for filename in os.listdir(directory_path):
         dataframes[stock_name] = df
 
 # Sliding Window Creation
-def create_time_based_sliding_window(dataFrame, n_steps, stock_name, date_step='1D'):
+def create_time_based_sliding_window(dataFrame, n_steps, stock_name, start_date, date_step='1D'):
     df = dc(dataFrame[stock_name])
     df['Date'] = pd.to_datetime(df['Date'])
     df = df[['Date', 'Adj Close']]
     df.set_index('Date', inplace=True)
     df = df.resample(date_step).last().dropna()
+
+    # Create shifted columns (time windows) for the target stock
     shifted_columns = [df['Adj Close'].shift(i).rename(f'Adj Close(t-{i})') for i in range(1, n_steps + 1)]
-    df = pd.concat([df] + shifted_columns, axis=1)
-    df.dropna(inplace=True)
+    df = pd.concat([df] + shifted_columns, axis=1).dropna()
+
+    # Convert start_date to datetime and filter target stock data
+    start_date = pd.to_datetime(start_date)
+    df = df[df.index >= start_date]
+    
+
+    
     return df
 
-# Prepare Data
-lookback = 180
-shifted_aapl_df = create_time_based_sliding_window(dataframes, lookback, 'AAPL', '1D')
-shifted_df_as_np = shifted_aapl_df.to_numpy()
-scaler = MinMaxScaler(feature_range=(-1, 1))
-shifted_df_as_np = scaler.fit_transform(shifted_df_as_np)
-X = shifted_df_as_np[:, 1:]
-y = shifted_df_as_np[:, 0]
-X = dc(np.flip(X, axis=1))
 
-# Train/Validation/Test Split
+# Prepare Data
+lookback = 30
+shifted_aapl_df = create_time_based_sliding_window(dataframes, lookback, 'AAPL', start_date='2016-01-01', date_step='1D')
+print(shifted_aapl_df)
+shifted_df_as_np = shifted_aapl_df.to_numpy()
+scaler = MinMaxScaler(feature_range=(0, 1))
+scaled_data = scaler.fit_transform(shifted_df_as_np)
+def create_sequences(data):
+    xs, ys = [], []
+    for i in range(len(data)):
+        x = data[i,1:]  # Features
+        y = data[i , 0]  # Target (Adj Close)
+        xs.append(x)
+        ys.append(y)
+    return np.array(xs), np.array(ys)
+
+X, y = create_sequences(scaled_data)
+print(X.shape)
 train_ratio = 0.7
 validation_ratio = 0.15
 test_ratio = 0.15
 train_index = int(len(X) * train_ratio)
 validation_index = int(len(X) * (train_ratio + validation_ratio))
 
+
+def reshape_data(X, y, lookback):
+    # Automatically get the number of features from X
+    num_features = X.shape[1]  # Assuming X is 2D (n_samples, n_features)
+    
+    # Calculate the number of samples
+    num_samples = (len(X) - lookback)  # Overlapping windows for prediction
+
+    # Initialize reshaped arrays
+    X_reshaped = np.zeros((num_samples, lookback, num_features))
+    y_reshaped = np.zeros((num_samples, 1))
+
+    for i in range(num_samples):
+        X_reshaped[i] = X[i:i + lookback]  # Get the window of lookback days
+        y_reshaped[i] = y[i + lookback - 1]  # Get the corresponding label for the next day
+
+    return X_reshaped, y_reshaped
+
+# Example usage with your indices
 X_train = X[:train_index]
 X_val = X[train_index:validation_index]
 X_test = X[validation_index:]
+
 y_train = y[:train_index]
 y_val = y[train_index:validation_index]
 y_test = y[validation_index:]
 
-# Reshape for LSTM
-X_train = X_train.reshape((-1, lookback, 1))
-X_val = X_val.reshape((-1, lookback, 1))
-X_test = X_test.reshape((-1, lookback, 1))
-y_train = y_train.reshape((-1, 1))
-y_val = y_val.reshape((-1, 1))
-y_test = y_test.reshape((-1, 1))
+# Reshape data
+X_train, y_train = reshape_data(X_train, y_train, lookback)
+X_val, y_val = reshape_data(X_val, y_val, lookback)
+X_test, y_test = reshape_data(X_test, y_test, lookback)
 
 # Convert to torch tensors
 X_train = torch.tensor(X_train).float()
@@ -86,7 +119,6 @@ X_test = torch.tensor(X_test).float()
 y_train = torch.tensor(y_train).float()
 y_val = torch.tensor(y_val).float()
 y_test = torch.tensor(y_test).float()
-
 # Dataset and DataLoader
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, y):
@@ -109,6 +141,7 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+
 # LSTM Model Definition
 class LSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_stacked_layers, dropout=0.2):
@@ -126,7 +159,7 @@ class LSTM(nn.Module):
         out = self.fc(out[:, -1, :])  # Only take the output of the last time step
         return out
 
-input_size = 1
+input_size = X_train.shape[2] 
 hidden_size = 200
 num_layers = 3
 dropout_rate = 0.2
@@ -224,17 +257,27 @@ plt.savefig('actual_vs_predicted_close.png')
 
 # Unscale predictions and actual values
 train_predictions = predicted.flatten()
-dummies_train = np.zeros((X_train.shape[0], lookback + 1))
-dummies_predictions = np.zeros((X_train.shape[0], lookback + 1))
+
+# Get the number of features from the input
+n_features = X_train.shape[2]  # Assuming X_train is shaped (n_samples, lookback, n_features)
+
+# Prepare dummies for actual and predicted values
+dummies_train = np.zeros((X_train.shape[0], n_features + 1))  # +1 for the actual value
+dummies_predictions = np.zeros((X_train.shape[0], n_features + 1))
+
+# Fill the first column with actual values and predictions
 dummies_train[:, 0] = y_train.flatten()
 dummies_predictions[:, 0] = train_predictions
 
+# Inverse transform to get unscaled values
 dummies_train = scaler.inverse_transform(dummies_train)
 dummies_predictions = scaler.inverse_transform(dummies_predictions)
 
+# Extract the unscaled actual and predicted values
 new_y_train = dummies_train[:, 0]
 train_predictions_unscaled = dummies_predictions[:, 0]
 
+# Plot for training set
 plt.figure(figsize=(10, 6))
 plt.plot(new_y_train, label='Actual Close', color='blue')
 plt.plot(train_predictions_unscaled, label='Predicted Close', color='orange')
@@ -248,7 +291,7 @@ plt.savefig('actual_vs_predicted_close_unscaled.png')
 with torch.no_grad():
     test_predictions = model(X_test.to(device)).cpu().numpy().flatten()
 
-# محاسبه متریک‌ها
+# Calculate metrics
 mse = mean_squared_error(y_test.cpu().numpy().flatten(), test_predictions)
 mae = mean_absolute_error(y_test.cpu().numpy().flatten(), test_predictions)
 rmse = np.sqrt(mse)
@@ -260,19 +303,20 @@ print(f"Root Mean Squared Error (RMSE) on scaled data: {rmse:.6f}")
 print(f"Mean Absolute Percentage Error (MAPE) on scaled data: {mape:.2f}%")
 
 # Inverse transform test predictions
-dummies_test = np.zeros((X_test.shape[0], lookback + 1))
+dummies_test = np.zeros((X_test.shape[0], n_features + 1))
 dummies_test[:, 0] = test_predictions
 dummies_test = scaler.inverse_transform(dummies_test)
 
 test_predictions_unscaled = dummies_test[:, 0]
 
 # Inverse transform y_test
-dummies_actual_test = np.zeros((X_test.shape[0], lookback + 1))
+dummies_actual_test = np.zeros((X_test.shape[0], n_features + 1))
 dummies_actual_test[:, 0] = y_test.cpu().numpy().flatten()
 dummies_actual_test = scaler.inverse_transform(dummies_actual_test)
 
 new_y_test = dummies_actual_test[:, 0]
 
+# Plot for test set
 plt.figure(figsize=(10, 6))
 plt.plot(new_y_test, label='Actual Close', color='blue')
 plt.plot(test_predictions_unscaled, label='Predicted Close', color='orange')
