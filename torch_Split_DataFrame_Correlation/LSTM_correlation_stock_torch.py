@@ -184,33 +184,6 @@ def create_time_based_sliding_window(dataFrame, n_steps, stock_name, date_step='
 
     return df
 
-
-
-
-
-# Prepare Data
-lookback = 30
-# نام فایل CSV که می‌خواهید داده‌ها را در آن ذخیره کنید
-csv_file = 'shifted_aapl_df'+str(lookback)+'.csv'
-
-# بررسی اینکه آیا فایل CSV وجود دارد یا خیر
-if os.path.exists(csv_file):
-    # اگر فایل وجود دارد، آن را بارگذاری کنید
-    shifted_aapl_df = pd.read_csv(csv_file, index_col=0, parse_dates=True)
-    print("Data loaded from CSV file.")
-else:
-    # اگر فایل وجود ندارد، داده‌ها را بسازید و ذخیره کنید
-    shifted_aapl_df = create_time_based_sliding_window(dataframes, lookback, 'AAPL', '1D', 3, -2, start_date='2016-01-01')
-    # ذخیره‌سازی داده‌ها در فایل CSV
-    shifted_aapl_df.to_csv(csv_file)
-    print("Data created and saved to CSV file.")
-
-# نمایش DataFrame
-print(shifted_aapl_df)
-shifted_df_as_np = shifted_aapl_df.to_numpy()
-# Normalize the dataset
-scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(shifted_df_as_np)
 def create_sequences(data):
     xs, ys = [], []
     for i in range(len(data)):
@@ -219,14 +192,6 @@ def create_sequences(data):
         xs.append(x)
         ys.append(y)
     return np.array(xs), np.array(ys)
-
-X, y = create_sequences(scaled_data)
-print(X.shape)
-train_ratio = 0.7
-validation_ratio = 0.15
-test_ratio = 0.15
-train_index = int(len(X) * train_ratio)
-validation_index = int(len(X) * (train_ratio + validation_ratio))
 
 
 def reshape_data(X, y, lookback):
@@ -246,27 +211,7 @@ def reshape_data(X, y, lookback):
 
     return X_reshaped, y_reshaped
 
-# Example usage with your indices
-X_train = X[:train_index]
-X_val = X[train_index:validation_index]
-X_test = X[validation_index:]
 
-y_train = y[:train_index]
-y_val = y[train_index:validation_index]
-y_test = y[validation_index:]
-
-# Reshape data
-X_train, y_train = reshape_data(X_train, y_train, lookback)
-X_val, y_val = reshape_data(X_val, y_val, lookback)
-X_test, y_test = reshape_data(X_test, y_test, lookback)
-
-# Convert to torch tensors
-X_train = torch.tensor(X_train).float()
-X_val = torch.tensor(X_val).float()
-X_test = torch.tensor(X_test).float()
-y_train = torch.tensor(y_train).float()
-y_val = torch.tensor(y_val).float()
-y_test = torch.tensor(y_test).float()
 # Dataset and DataLoader
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, y):
@@ -279,39 +224,6 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, i):
         return self.X[i], self.y[i]
 
-batch_size = 32
-train_dataset = TimeSeriesDataset(X_train, y_train)
-val_dataset = TimeSeriesDataset(X_val, y_val)
-test_dataset = TimeSeriesDataset(X_test, y_test)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-
-# LSTM Model Definition
-class LSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_stacked_layers, dropout=0.2):
-        super(LSTM, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_stacked_layers = num_stacked_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_stacked_layers, batch_first=True, dropout=dropout)
-        self.fc = nn.Linear(hidden_size, 1)
-
-    def forward(self, x):
-        batch_size = x.size(0)
-        h0 = torch.zeros(self.num_stacked_layers, batch_size, self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_stacked_layers, batch_size, self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])  # Only take the output of the last time step
-        return out
-
-input_size = X_train.shape[2] 
-hidden_size = 200
-num_layers = 3
-dropout_rate = 0.2
-model = LSTM(input_size, hidden_size, num_layers, dropout=dropout_rate).to(device)
 
 # Training and Validation Functions
 def train_one_epoch(epoch, model, train_loader, optimizer, loss_function, device):
@@ -341,135 +253,240 @@ def validate_one_epoch(model, val_loader, loss_function, device):
     avg_val_loss = running_loss / len(val_loader)
     print(f'Validation Loss: {avg_val_loss:.6f}')
     return avg_val_loss  # اطمینان از بازگشت مقدار
+# LSTM Model Definition
+class LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_stacked_layers, dropout=0.2):
+        super(LSTM, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_stacked_layers = num_stacked_layers
+        self.lstm = nn.LSTM(input_size, hidden_size, num_stacked_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, 1)
 
-# Training Loop
+    def forward(self, x):
+        batch_size = x.size(0)
+        h0 = torch.zeros(self.num_stacked_layers, batch_size, self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_stacked_layers, batch_size, self.hidden_size).to(x.device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])  # Only take the output of the last time step
+        return out
+# Example usage with your indices
+
+
+# Main Loop for Processing Stocks
+errors = []
+lookback = 60  # تنظیم مقدار lookback
+
+# ایجاد فولدر برای ذخیره نتایج
+lookback_dir = f'lookback_{lookback}'
+plot_dir = os.path.join(lookback_dir, 'stock_plots') 
+os.makedirs(plot_dir, exist_ok=True)
+
+# فایل ارورها
+error_file = os.path.join(lookback_dir, f'stock_errors_lookback_{lookback}.csv')
+
+# خواندن فایل ارورها در صورت وجود
+if os.path.exists(error_file):
+    error_df = pd.read_csv(error_file)
+    processed_stocks = error_df['Stock'].tolist()
+else:
+    processed_stocks = []
+
+# پارامترهای مدل
+batch_size = 32
+hidden_size = 200
+num_layers = 3
+dropout_rate = 0.2
 learning_rate = 0.0001
 num_epochs = 100
-loss_function = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)  # افزودن Weight Decay
-
-# تعریف Scheduler بدون پارامتر verbose
-scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
-
-# Early Stopping parameters
-best_val_loss = float('inf')
 patience = 20
-counter = 0
+train_ratio = 0.7
+validation_ratio = 0.15
+test_ratio = 0.15
 
-for epoch in range(num_epochs):
-    train_one_epoch(epoch, model, train_loader, optimizer, loss_function, device)
-    val_loss = validate_one_epoch(model, val_loader, loss_function, device)
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+loss_function = torch.nn.MSELoss()
+
+for stock_name in dataframes.keys():
+    print(f"Processing stock: {stock_name}")
+    if stock_name in processed_stocks:
+        print(f"Skipping {stock_name}: Already processed.")
+        continue  # رد سهامی که قبلاً پردازش شده‌اند
     
-    # افزودن دستور چاپ برای دیباگ
-    print(f'Epoch {epoch+1}: val_loss={val_loss}, type={type(val_loss)}')
-    
-    if val_loss is None:
-        raise ValueError("Validation loss is None. بررسی کنید که تابع validate_one_epoch به درستی مقدار باز می‌گرداند.")
-    
-    # به‌روزرسانی Scheduler با مقدار val_loss
-    scheduler.step(val_loss)
-    
-    # مشاهده نرخ یادگیری فعلی
-    current_lr = scheduler.get_last_lr()
-    print(f'Current learning rate: {current_lr}')
-    
-    # بررسی بهترین مقدار val_loss برای Early Stopping
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        best_model_wts = dc(model.state_dict())
-        counter = 0
-    else:
-        counter += 1
-        if counter >= patience:
-            print("Early stopping triggered")
-            break
+    try:
+        # بررسی اینکه سهام داده‌ای در سال ۲۰۱۵ دارد یا خیر
+        df = dc(dataframes[stock_name])
+        df['Date'] = pd.to_datetime(df['Date'])
+        df_2015 = df[(df['Date'] >= '2015-01-01') & (df['Date'] < '2016-01-01')]
 
-# بارگذاری بهترین وزن‌ها
-model.load_state_dict(best_model_wts)
+        if len(df_2015) == 0:
+            print(f"Skipping {stock_name}: No data available in 2015.")
+            continue  # رد سهام‌هایی که در ۲۰۱۵ داده‌ای ندارند
 
-# ادامه کد برای پیش‌بینی و ارزیابی مدل
-with torch.no_grad():
-    predicted = model(X_train.to(device)).cpu().numpy()
+        shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', 3, -2, start_date='2016-01-01')
 
-y_train_cpu = y_train.cpu().numpy()
+        if len(shifted_df) == 0:
+            print(f"No data available for stock {stock_name} after the start date.")
+            continue
 
-# Plot
-plt.figure(figsize=(10, 6))
-plt.plot(y_train_cpu, label='Actual Close')
-plt.plot(predicted, label='Predicted Close')
-plt.xlabel('Day')
-plt.ylabel('Close Price')
-plt.title('Actual vs Predicted Close Price')
-plt.legend()
-plt.savefig('actual_vs_predicted_close.png')
+        shifted_df_as_np = shifted_df.to_numpy()
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(shifted_df_as_np)
 
-# Unscale predictions and actual values
-train_predictions = predicted.flatten()
+        # ایجاد توالی‌ها
+        X, y = create_sequences(scaled_data)
 
-# Get the number of features from the input
-n_features = X_train.shape[2]  # Assuming X_train is shaped (n_samples, lookback, n_features)
+        # تقسیم داده‌ها به مجموعه‌های آموزشی، اعتبارسنجی و تست
+        train_index = int(len(X) * train_ratio)
+        validation_index = int(len(X) * (train_ratio + validation_ratio))
 
-# Prepare dummies for actual and predicted values
-dummies_train = np.zeros((X_train.shape[0], n_features + 1))  # +1 for the actual value
-dummies_predictions = np.zeros((X_train.shape[0], n_features + 1))
+        X_train, y_train = X[:train_index], y[:train_index]
+        X_val, y_val = X[train_index:validation_index], y[train_index:validation_index]
+        X_test, y_test = X[validation_index:], y[validation_index:]
 
-# Fill the first column with actual values and predictions
-dummies_train[:, 0] = y_train.flatten()
-dummies_predictions[:, 0] = train_predictions
+        # شکل‌دهی دوباره داده‌ها
+        X_train, y_train = reshape_data(X_train, y_train, lookback)
+        X_val, y_val = reshape_data(X_val, y_val, lookback)
+        X_test, y_test = reshape_data(X_test, y_test, lookback)
 
-# Inverse transform to get unscaled values
-dummies_train = scaler.inverse_transform(dummies_train)
-dummies_predictions = scaler.inverse_transform(dummies_predictions)
+        # تبدیل داده‌ها به تنسورهای PyTorch
+        X_train, y_train = torch.tensor(X_train).float(), torch.tensor(y_train).float()
+        X_val, y_val = torch.tensor(X_val).float(), torch.tensor(y_val).float()
+        X_test, y_test = torch.tensor(X_test).float(), torch.tensor(y_test).float()
 
-# Extract the unscaled actual and predicted values
-new_y_train = dummies_train[:, 0]
-train_predictions_unscaled = dummies_predictions[:, 0]
+        # ایجاد DataLoader
+        train_dataset = TimeSeriesDataset(X_train, y_train)
+        val_dataset = TimeSeriesDataset(X_val, y_val)
+        test_dataset = TimeSeriesDataset(X_test, y_test)
 
-# Plot for training set
-plt.figure(figsize=(10, 6))
-plt.plot(new_y_train, label='Actual Close', color='blue')
-plt.plot(train_predictions_unscaled, label='Predicted Close', color='orange')
-plt.xlabel('Day')
-plt.ylabel('Close Price')
-plt.title('Actual vs Predicted Close Price (Unscaled)')
-plt.legend()
-plt.savefig('actual_vs_predicted_close_unscaled.png')
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-# Test Set Predictions and Metrics
-with torch.no_grad():
-    test_predictions = model(X_test.to(device)).cpu().numpy().flatten()
+        # ایجاد مدل LSTM
+        input_size = X_train.shape[2]
+        model = LSTM(input_size, hidden_size, num_layers, dropout_rate).to(device)
 
-# Calculate metrics
-mse = mean_squared_error(y_test.cpu().numpy().flatten(), test_predictions)
-mae = mean_absolute_error(y_test.cpu().numpy().flatten(), test_predictions)
-rmse = np.sqrt(mse)
-mape = mean_absolute_percentage_error(y_test.cpu().numpy().flatten(), test_predictions)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
-print(f"Mean Squared Error (MSE) on scaled data: {mse:.6f}")
-print(f"Mean Absolute Error (MAE) on scaled data: {mae:.6f}")
-print(f"Root Mean Squared Error (RMSE) on scaled data: {rmse:.6f}")
-print(f"Mean Absolute Percentage Error (MAPE) on scaled data: {mape:.2f}%")
+        best_val_loss = float('inf')
+        patience_counter = 0
 
-# Inverse transform test predictions
-dummies_test = np.zeros((X_test.shape[0], n_features + 1))
-dummies_test[:, 0] = test_predictions
-dummies_test = scaler.inverse_transform(dummies_test)
+        for epoch in range(num_epochs):
+            train_one_epoch(epoch, model, train_loader, optimizer, loss_function, device)
+            val_loss = validate_one_epoch(model, val_loader, loss_function, device)
+            scheduler.step(val_loss)
 
-test_predictions_unscaled = dummies_test[:, 0]
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_model_wts = dc(model.state_dict())
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"Early stopping triggered for {stock_name}")
+                    break
 
-# Inverse transform y_test
-dummies_actual_test = np.zeros((X_test.shape[0], n_features + 1))
-dummies_actual_test[:, 0] = y_test.cpu().numpy().flatten()
-dummies_actual_test = scaler.inverse_transform(dummies_actual_test)
+        model.load_state_dict(best_model_wts)
 
-new_y_test = dummies_actual_test[:, 0]
+        # پیش‌بینی و محاسبه متریک‌ها برای تست
+        with torch.no_grad():
+            test_predictions = model(X_test.to(device)).cpu().numpy().flatten()
 
-# Plot for test set
-plt.figure(figsize=(10, 6))
-plt.plot(new_y_test, label='Actual Close', color='blue')
-plt.plot(test_predictions_unscaled, label='Predicted Close', color='orange')
-plt.xlabel('Day')
-plt.ylabel('Close Price')
-plt.title('Actual vs Predicted Close Price (Test Set)')
-plt.legend()
-plt.savefig('actual_vs_predicted_close_test.png')
+        mse = mean_squared_error(y_test.cpu().numpy().flatten(), test_predictions)
+        mae = mean_absolute_error(y_test.cpu().numpy().flatten(), test_predictions)
+        rmse = np.sqrt(mse)
+        mape = mean_absolute_percentage_error(y_test.cpu().numpy().flatten(), test_predictions)
+
+        # ذخیره ارورها
+        errors.append([stock_name, mse, mae, rmse, mape])
+        new_errors_df = pd.DataFrame(errors, columns=['Stock', 'MSE', 'MAE', 'RMSE', 'MAPE'])
+        
+        if os.path.exists(error_file):
+            error_df = pd.read_csv(error_file)
+            
+            # ترکیب داده‌ها
+            combined_df = pd.concat([error_df, new_errors_df], ignore_index=True)
+            
+            # حذف رکوردهای تکراری بر اساس ستون 'Stock'
+            combined_df = combined_df.drop_duplicates(subset=['Stock'], keep='last')
+        else:
+            combined_df = new_errors_df
+        # ذخیره داده‌ها در فایل CSV
+        combined_df.to_csv(error_file, index=False)
+        # بازگردانی پیش‌بینی‌ها به مقیاس اصلی
+        dummies_test = np.zeros((X_test.shape[0], input_size + 1))
+        dummies_test[:, 0] = test_predictions
+        dummies_test = scaler.inverse_transform(dummies_test)
+        test_predictions_unscaled = dummies_test[:, 0]
+
+        dummies_actual_test = np.zeros((X_test.shape[0], input_size + 1))
+        dummies_actual_test[:, 0] = y_test.cpu().numpy().flatten()
+        dummies_actual_test = scaler.inverse_transform(dummies_actual_test)
+        new_y_test = dummies_actual_test[:, 0]
+
+        # ذخیره نمودارهای پیش‌بینی و واقعی برای تست
+        plt.figure(figsize=(10, 6))
+        plt.plot(new_y_test, label='Actual Close', color='blue')
+        plt.plot(test_predictions_unscaled, label='Predicted Close', color='orange')
+        plt.xlabel('Day')
+        plt.ylabel('Close Price')
+        plt.title(f'Actual vs Predicted Close Price (Test Set) for {stock_name}')
+        plt.legend()
+        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_test.png'))
+        plt.close()
+
+        # پیش‌بینی و ذخیره نمودارهای train
+        with torch.no_grad():
+            train_predictions = model(X_train.to(device)).cpu().numpy().flatten()
+
+        dummies_train = np.zeros((X_train.shape[0], input_size + 1))
+        dummies_train[:, 0] = train_predictions
+        dummies_train = scaler.inverse_transform(dummies_train)
+        train_predictions_unscaled = dummies_train[:, 0]
+
+        dummies_actual_train = np.zeros((X_train.shape[0], input_size + 1))
+        dummies_actual_train[:, 0] = y_train.cpu().numpy().flatten()
+        dummies_actual_train = scaler.inverse_transform(dummies_actual_train)
+        new_y_train = dummies_actual_train[:, 0]
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(new_y_train, label='Actual Close', color='blue')
+        plt.plot(train_predictions_unscaled, label='Predicted Close', color='orange')
+        plt.xlabel('Day')
+        plt.ylabel('Close Price')
+        plt.title(f'Actual vs Predicted Close Price (Train Set) for {stock_name}')
+        plt.legend()
+        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_train.png'))
+        plt.close()
+
+        # پیش‌بینی و ذخیره نمودارهای validation
+        with torch.no_grad():
+            val_predictions = model(X_val.to(device)).cpu().numpy().flatten()
+
+        dummies_val = np.zeros((X_val.shape[0], input_size + 1))
+        dummies_val[:, 0] = val_predictions
+        dummies_val = scaler.inverse_transform(dummies_val)
+        val_predictions_unscaled = dummies_val[:, 0]
+
+        dummies_actual_val = np.zeros((X_val.shape[0], input_size + 1))
+        dummies_actual_val[:, 0] = y_val.cpu().numpy().flatten()
+        dummies_actual_val = scaler.inverse_transform(dummies_actual_val)
+        new_y_val = dummies_actual_val[:, 0]
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(new_y_val, label='Actual Close', color='blue')
+        plt.plot(val_predictions_unscaled, label='Predicted Close', color='orange')
+        plt.xlabel('Day')
+        plt.ylabel('Close Price')
+        plt.title(f'Actual vs Predicted Close Price (Validation Set) for {stock_name}')
+        plt.legend()
+        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_validation.png'))
+        plt.close()
+
+        print(f"Completed processing for {stock_name}")
+
+    except Exception as e:
+        print(f"Error processing stock {stock_name}: {str(e)}")
+
+print("All stocks processed.")
