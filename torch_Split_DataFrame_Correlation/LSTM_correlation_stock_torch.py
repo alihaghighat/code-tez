@@ -269,12 +269,12 @@ class LSTM(nn.Module):
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])  # Only take the output of the last time step
         return out
-# Example usage with your indices
+# Example usage with your indices 
 
 
 # Main Loop for Processing Stocks
 errors = []
-lookback = 60  # تنظیم مقدار lookback
+lookback = 180  # تنظیم مقدار lookback
 
 # ایجاد فولدر برای ذخیره نتایج
 lookback_dir = f'lookback_{lookback}'
