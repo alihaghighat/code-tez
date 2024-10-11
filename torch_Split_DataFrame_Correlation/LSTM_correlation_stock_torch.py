@@ -272,17 +272,18 @@ class LSTM(nn.Module):
 # Example usage with your indices 
 
 
-# Main Loop for Processing Stocks
 errors = []
-lookback = 180  # تنظیم مقدار lookback
+lookback = 30  # تنظیم مقدار lookback
+delay = -5
 
-# ایجاد فولدر برای ذخیره نتایج
-lookback_dir = f'lookback_{lookback}'
+
+# ایجاد فولدر برای ذخیره نتایج با توجه به delay
+lookback_dir = f'lookback_{lookback}_delay_{delay}'
 plot_dir = os.path.join(lookback_dir, 'stock_plots') 
 os.makedirs(plot_dir, exist_ok=True)
 
-# فایل ارورها
-error_file = os.path.join(lookback_dir, f'stock_errors_lookback_{lookback}.csv')
+# فایل ارورها با توجه به delay
+error_file = os.path.join(lookback_dir, f'lookback_{lookback}_delay_{delay}.csv')
 
 # خواندن فایل ارورها در صورت وجود
 if os.path.exists(error_file):
@@ -322,7 +323,7 @@ for stock_name in dataframes.keys():
             print(f"Skipping {stock_name}: No data available in 2015.")
             continue  # رد سهام‌هایی که در ۲۰۱۵ داده‌ای ندارند
 
-        shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', 3, -2, start_date='2016-01-01')
+        shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', 3, delay, start_date='2016-01-01')
 
         if len(shifted_df) == 0:
             print(f"No data available for stock {stock_name} after the start date.")
@@ -404,85 +405,41 @@ for stock_name in dataframes.keys():
         
         if os.path.exists(error_file):
             error_df = pd.read_csv(error_file)
-            
-            # ترکیب داده‌ها
             combined_df = pd.concat([error_df, new_errors_df], ignore_index=True)
-            
-            # حذف رکوردهای تکراری بر اساس ستون 'Stock'
             combined_df = combined_df.drop_duplicates(subset=['Stock'], keep='last')
         else:
             combined_df = new_errors_df
-        # ذخیره داده‌ها در فایل CSV
+        
         combined_df.to_csv(error_file, index=False)
-        # بازگردانی پیش‌بینی‌ها به مقیاس اصلی
-        dummies_test = np.zeros((X_test.shape[0], input_size + 1))
-        dummies_test[:, 0] = test_predictions
-        dummies_test = scaler.inverse_transform(dummies_test)
-        test_predictions_unscaled = dummies_test[:, 0]
+        
+        # بازگردانی پیش‌بینی‌ها به مقیاس اصلی و ذخیره نمودارها
+        def plot_predictions(dataset, predictions, labels, title, filename):
+            dummies = np.zeros((dataset.shape[0], input_size + 1))
+            dummies[:, 0] = predictions
+            predictions_unscaled = scaler.inverse_transform(dummies)[:, 0]
+            
+            dummies_actual = np.zeros((dataset.shape[0], input_size + 1))
+            dummies_actual[:, 0] = labels
+            actual_unscaled = scaler.inverse_transform(dummies_actual)[:, 0]
 
-        dummies_actual_test = np.zeros((X_test.shape[0], input_size + 1))
-        dummies_actual_test[:, 0] = y_test.cpu().numpy().flatten()
-        dummies_actual_test = scaler.inverse_transform(dummies_actual_test)
-        new_y_test = dummies_actual_test[:, 0]
+            plt.figure(figsize=(10, 6))
+            plt.plot(actual_unscaled, label='Actual Close', color='blue')
+            plt.plot(predictions_unscaled, label='Predicted Close', color='orange')
+            plt.xlabel('Day')
+            plt.ylabel('Close Price')
+            plt.title(title)
+            plt.legend()
+            plt.savefig(os.path.join(plot_dir, filename))
+            plt.close()
 
-        # ذخیره نمودارهای پیش‌بینی و واقعی برای تست
-        plt.figure(figsize=(10, 6))
-        plt.plot(new_y_test, label='Actual Close', color='blue')
-        plt.plot(test_predictions_unscaled, label='Predicted Close', color='orange')
-        plt.xlabel('Day')
-        plt.ylabel('Close Price')
-        plt.title(f'Actual vs Predicted Close Price (Test Set) for {stock_name}')
-        plt.legend()
-        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_test.png'))
-        plt.close()
-
-        # پیش‌بینی و ذخیره نمودارهای train
+        plot_predictions(X_test, test_predictions, y_test.cpu().numpy().flatten(), f'Actual vs Predicted Close Price (Test Set) for {stock_name}', f'{stock_name}_lookback_{lookback}_delay_{delay}_actual_vs_predicted_close_test.png')
+        
         with torch.no_grad():
             train_predictions = model(X_train.to(device)).cpu().numpy().flatten()
-
-        dummies_train = np.zeros((X_train.shape[0], input_size + 1))
-        dummies_train[:, 0] = train_predictions
-        dummies_train = scaler.inverse_transform(dummies_train)
-        train_predictions_unscaled = dummies_train[:, 0]
-
-        dummies_actual_train = np.zeros((X_train.shape[0], input_size + 1))
-        dummies_actual_train[:, 0] = y_train.cpu().numpy().flatten()
-        dummies_actual_train = scaler.inverse_transform(dummies_actual_train)
-        new_y_train = dummies_actual_train[:, 0]
-
-        plt.figure(figsize=(10, 6))
-        plt.plot(new_y_train, label='Actual Close', color='blue')
-        plt.plot(train_predictions_unscaled, label='Predicted Close', color='orange')
-        plt.xlabel('Day')
-        plt.ylabel('Close Price')
-        plt.title(f'Actual vs Predicted Close Price (Train Set) for {stock_name}')
-        plt.legend()
-        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_train.png'))
-        plt.close()
-
-        # پیش‌بینی و ذخیره نمودارهای validation
-        with torch.no_grad():
             val_predictions = model(X_val.to(device)).cpu().numpy().flatten()
 
-        dummies_val = np.zeros((X_val.shape[0], input_size + 1))
-        dummies_val[:, 0] = val_predictions
-        dummies_val = scaler.inverse_transform(dummies_val)
-        val_predictions_unscaled = dummies_val[:, 0]
-
-        dummies_actual_val = np.zeros((X_val.shape[0], input_size + 1))
-        dummies_actual_val[:, 0] = y_val.cpu().numpy().flatten()
-        dummies_actual_val = scaler.inverse_transform(dummies_actual_val)
-        new_y_val = dummies_actual_val[:, 0]
-
-        plt.figure(figsize=(10, 6))
-        plt.plot(new_y_val, label='Actual Close', color='blue')
-        plt.plot(val_predictions_unscaled, label='Predicted Close', color='orange')
-        plt.xlabel('Day')
-        plt.ylabel('Close Price')
-        plt.title(f'Actual vs Predicted Close Price (Validation Set) for {stock_name}')
-        plt.legend()
-        plt.savefig(os.path.join(plot_dir, f'{stock_name}_lookback_{lookback}_actual_vs_predicted_close_validation.png'))
-        plt.close()
+        plot_predictions(X_train, train_predictions, y_train.cpu().numpy().flatten(), f'Actual vs Predicted Close Price (Train Set) for {stock_name}', f'{stock_name}_lookback_{lookback}_delay_{delay}_actual_vs_predicted_close_train.png')
+        plot_predictions(X_val, val_predictions, y_val.cpu().numpy().flatten(), f'Actual vs Predicted Close Price (Validation Set) for {stock_name}', f'{stock_name}_lookback_{lookback}_delay_{delay}_actual_vs_predicted_close_validation.png')
 
         print(f"Completed processing for {stock_name}")
 
