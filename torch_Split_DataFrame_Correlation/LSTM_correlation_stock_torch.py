@@ -273,7 +273,7 @@ class LSTM(nn.Module):
 
 
 errors = []
-lookback = 30  # تنظیم مقدار lookback
+lookback = 60  # تنظیم مقدار lookback
 delay = -5
 
 

@@ -1,55 +1,104 @@
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# تعریف طول پنجره و مسیرهای فایل
-lookback = 180  # فقط طول پنجره ۳۰ روز
+# تعریف طول پنجره، دیلی‌ها و مسیرهای فایل
+lookback = 60
+delays = range(-1, -6)  # دیلی‌های -۱ تا -۵
 data_paths = {
     'stock_only': "./torch_Split_DataFrame/lookback_{}",
-    'stock_with_correlation': "./torch_Split_DataFrame_Correlation/lookback_{}",
-    'correlation_only': "./torch_Split_DataFrame_Correlation_without_stock_data/lookback_{}"
+    'stock_with_correlation': "./torch_Split_DataFrame_Correlation/lookback_{}_delay_{}",
 }
 
 # دیکشنری برای ذخیره داده‌ها
-dataframes = {'stock_only': None, 'stock_with_correlation': None, 'correlation_only': None}
+dataframes = {'stock_only': None}
 
-# خواندن داده‌های هر مجموعه برای طول پنجره ۳۰ روز
-for data_type, path_template in data_paths.items():
-    filename = f"{path_template}/stock_errors_lookback_{lookback}.csv"
-    dataframes[data_type] = pd.read_csv(filename.format(lookback))
+# چک کردن فایل و خواندن داده‌های stock_only
+filename_stock_only = f"{data_paths['stock_only']}/stock_errors_lookback_{lookback}.csv"
+if os.path.exists(filename_stock_only.format(lookback)):
+    dataframes['stock_only'] = pd.read_csv(filename_stock_only.format(lookback))
+else:
+    print(f"Error: File not found: {filename_stock_only.format(lookback)}")
+
 
 # دریافت ترتیب سهام از stock_only
-stock_order = dataframes['stock_only']['Stock'].tolist()  # دریافت ترتیب سهام
+if dataframes['stock_only'] is not None:
+    stock_order = dataframes['stock_only']['Stock'].tolist()
+    print(delays) 
+    # خواندن و مرتب‌سازی داده‌های stock_with_correlation برای هر دیلی
+    for delay in range(-1, -6, -1):
+        print(delay)
+        # ساخت مسیر جدید بر اساس نام فولدر و نام فایل به‌روز شده
+        filename_corr = f"./torch_Split_DataFrame_Correlation/lookback_{lookback}_delay_{delay}/stock_errors_lookback_60.csv"
 
-# مرتب‌سازی داده‌های stock_with_correlation بر اساس ترتیب سهام
-dataframes['stock_with_correlation'] = dataframes['stock_with_correlation'].set_index('Stock').reindex(stock_order).reset_index()
+        if(delay!=-2):
+            filename_corr = f"./torch_Split_DataFrame_Correlation/lookback_{lookback}_delay_{delay}/lookback_{lookback}_delay_{delay}.csv"
+
+        print(filename_corr)
+        if os.path.exists(filename_corr):
+            dataframes[f'stock_with_correlation_delay_{delay}'] = pd.read_csv(filename_corr)
+            dataframes[f'stock_with_correlation_delay_{delay}'] = (
+                dataframes[f'stock_with_correlation_delay_{delay}']
+                .set_index('Stock')
+                .reindex(stock_order)
+                .reset_index()
+            )
+        else:
+            print(f"Error: File not found: {filename_corr}")
 
 # تعریف پارامترهای نمودار
 error_types = ['MSE', 'MAE', 'RMSE']
-colors = {'stock_only': 'blue', 'stock_with_correlation': 'orange', 'correlation_only': 'green'}
-labels = {'stock_only': 'Stock Only', 'stock_with_correlation': 'Stock with Correlation', 'correlation_only': 'Correlation Only'}
-
-# رسم نمودارها برای هر نوع ارور
+colors = {
+    'stock_only': 'blue',
+    'stock_with_correlation_delay_-1': 'orange',
+    'stock_with_correlation_delay_-2': 'green',
+    'stock_with_correlation_delay_-3': 'red',
+    'stock_with_correlation_delay_-4': 'purple',
+    'stock_with_correlation_delay_-5': 'brown'
+}
+labels = {
+    'stock_only': 'Stock Only',
+    'stock_with_correlation_delay_-1': 'Stock with Correlation (Delay -1)',
+    'stock_with_correlation_delay_-2': 'Stock with Correlation (Delay -2)',
+    'stock_with_correlation_delay_-3': 'Stock with Correlation (Delay -3)',
+    'stock_with_correlation_delay_-4': 'Stock with Correlation (Delay -4)',
+    'stock_with_correlation_delay_-5': 'Stock with Correlation (Delay -5)'
+}
+group_size = 20  # اندازه گروه‌ها
+num_stocks = len(stock_order)
+# ایجاد فولدر برای ذخیره نمودارها
+output_folder = f"Error_Charts_Lookback_{lookback}_Delays_-1_to_-5"
+os.makedirs(output_folder, exist_ok=True)
 for error_type in error_types:
-    plt.figure(figsize=(30, 8))
+    for i in range(0, num_stocks, group_size):
+        # تنظیمات محدوده برای گروه ۲۰ تایی
+        stock_subset = stock_order[i:i + group_size]
+        plt.figure(figsize=(20, 10))
 
-    # رسم خطوط برای هر نوع داده
-    for data_type in dataframes.keys():
-        if error_type in dataframes[data_type].columns:
-            plt.plot(dataframes[data_type]['Stock'], 
-                     dataframes[data_type][error_type], 
-                     label=labels[data_type], 
-                     color=colors[data_type], 
-                     marker='o', 
-                     linestyle='-')
+        # رسم نقاط برای هر نوع داده در گروه ۲۰ تایی
+        for data_type in dataframes.keys():
+            if dataframes[data_type] is not None and error_type in dataframes[data_type].columns:
+                data_subset = dataframes[data_type][dataframes[data_type]['Stock'].isin(stock_subset)]
+                plt.plot(
+                    data_subset['Stock'], 
+                    data_subset[error_type], 
+                    label=labels[data_type], 
+                    color=colors[data_type], 
+                    marker='o', 
+                    linestyle='-'
+                )
 
-    # تنظیمات نمودار
-    plt.xlabel('Stock')
-    plt.ylabel('Error Value')
-    plt.title(f'Comparison of {error_type} for Lookback Window Size of {lookback}')
-    plt.xticks(rotation=45)
-    plt.legend()
+        # تنظیمات نمودار
+        plt.xlabel('Stock')
+        plt.ylabel('Error Value')
+        plt.title(f'{error_type} for Stocks {i + 1} to {min(i + group_size, num_stocks)} - Lookback {lookback}, Delays -1 to -5')
+        plt.xticks(rotation=45)
+        plt.legend()
+        plt.tight_layout()
 
-    # ذخیره نمودار به عنوان فایل تصویری
-    plt.tight_layout()
-    plt.savefig(f"{error_type}_comparison_lookback_{lookback}.png", dpi=300)
-    plt.close()
+        # ذخیره نمودار به عنوان فایل تصویری با نام مناسب
+        output_path = os.path.join(output_folder, f"{error_type}_Group_{i + 1}_to_{min(i + group_size, num_stocks)}_Lookback_{lookback}_Delays_-1_to_-5.png")
+        plt.savefig(output_path, dpi=300)
+        plt.close()
+
+print(f"Charts have been saved in the folder: {output_folder}")
