@@ -35,7 +35,7 @@ for filename in os.listdir(directory_path):
         df = pd.read_csv(file_path)
         dataframes[stock_name] = df
 
-# Sliding Window Creation
+# Sliding Window Creation with Last Year's 30-Day Data
 def create_time_based_sliding_window(dataFrame, n_steps, stock_name, start_date, date_step='1D'):
     df = dc(dataFrame[stock_name])
     df['Date'] = pd.to_datetime(df['Date'])
@@ -43,15 +43,16 @@ def create_time_based_sliding_window(dataFrame, n_steps, stock_name, start_date,
     df.set_index('Date', inplace=True)
     df = df.resample(date_step).last().dropna()
 
-    # Create shifted columns (time windows) for the target stock
-    shifted_columns = [df['Adj Close'].shift(i).rename(f'Adj Close(t-{i})') for i in range(1, n_steps + 1)]
+    # Create columns for 30 days before the same date last year
+    shifted_columns = [df['Adj Close'].shift(365 - i).rename(f'Adj Close(t-{i})') for i in  range(1, n_steps + 1)]
     df = pd.concat([df] + shifted_columns, axis=1).dropna()
 
-    # Convert start_date to datetime and filter target stock data
+    # Filter data based on start_date
     start_date = pd.to_datetime(start_date)
     df = df[df.index >= start_date]
     
     return df
+
 
 # Prepare Data for training
 def create_sequences(data):
@@ -135,7 +136,7 @@ def validate_one_epoch(model, val_loader, loss_function, device):
 
 # Main Loop for Processing Stocks 
 errors = []
-lookback = 32  # تنظیم مقدار lookback
+lookback = 30  # تنظیم مقدار lookback
 
 # ایجاد فولدر برای qaz
 lookback_dir = f'lookback_{lookback}'
@@ -175,7 +176,7 @@ for stock_name in dataframes.keys():
 
         # آماده‌سازی داده‌ها
         shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, start_date='2015-01-01', date_step='1D')
-
+    
         if len(shifted_df) == 0:
             print(f"No data available for stock {stock_name} after the start date.")
             continue

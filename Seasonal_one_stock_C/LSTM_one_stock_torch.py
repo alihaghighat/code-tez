@@ -126,7 +126,7 @@ def create_time_based_sliding_window(dataFrame, n_steps, stock_name, date_step='
     df = df.resample(date_step).last().dropna()
 
     # Create shifted columns (time windows) for the target stock
-    shifted_columns = [df['Adj Close'].shift(i).rename(f'Adj Close(t-{i})') for i in range(1, n_steps + 1)]
+    shifted_columns = [df['Adj Close'].shift(365 - i).rename(f'Adj Close(t-{i})') for i in  range(1, n_steps + 1)]
     df = pd.concat([df] + shifted_columns, axis=1).dropna()
 
     # Prepare the other stocks data in advance
@@ -273,8 +273,8 @@ class LSTM(nn.Module):
 
 
 errors = []
-lookback = 60  # تنظیم مقدار lookback
-delay = -5 
+lookback = 30  # تنظیم مقدار lookback
+delay = -1
  
 
 # ایجاد فولدر برای ذخیره نتایج با توجه به delay
