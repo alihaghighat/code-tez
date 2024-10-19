@@ -274,7 +274,7 @@ class LSTM(nn.Module):
 
 errors = []
 lookback = 30  # تنظیم مقدار lookback
-delay = -1
+delay = -5
  
 
 # ایجاد فولدر برای ذخیره نتایج با توجه به delay
