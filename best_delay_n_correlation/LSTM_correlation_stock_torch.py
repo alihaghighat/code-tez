@@ -24,7 +24,6 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 set_seed(42)  # می‌توانید مقدار دانه را تغییر دهید
-
 # خواندن فایل stocks_server_1.csv برای لیست سهام‌هایی که باید تحلیل شوند
 stocks_server_1_df = pd.read_csv('../stocks_server_1.csv')
 stocks_server_1 = stocks_server_1_df['Stock'].tolist()
@@ -134,7 +133,7 @@ def create_time_based_sliding_window(dataFrame, n_steps, stock_name, date_step='
     df = df.resample(date_step).last().dropna()
 
     # Create shifted columns (time windows) for the target stock
-    shifted_columns = [df['Adj Close'].shift(i).rename(f'Adj Close(t-{i})') for i in range(1, n_steps + 1)]
+    shifted_columns = [df['Adj Close'].shift(365 - i).rename(f'Adj Close(t-{i})') for i in  range(1, n_steps + 1)]
     df = pd.concat([df] + shifted_columns, axis=1).dropna()
 
     # Prepare the other stocks data in advance
@@ -277,110 +276,114 @@ class LSTM(nn.Module):
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])  # Only take the output of the last time step
         return out
-# Example usage with your indices 
+lookback_values = [20, 30, 40]  # مقادیر lookback
+delay_values = [-5, -4, -3, -2, -1]  # مقادیر delay
+n_top_values = [2, 3, 4]  # تعداد همبستگی‌ها
 
-import os
-import torch
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
-import matplotlib.pyplot as plt
-from copy import deepcopy as dc
-
-# پارامترهای اولیه
-errors = []
-lookback_values = [20, 30, 40]  # مقادیر مختلف lookback
-delay_values = [-5, -4, -3,-2,-1]  # مقادیر مختلف delay
-n_tops = [1, 2, 3,4]  # مقادیر مختلف برای step (قبلاً 3 بود)
-
-# ایجاد فولدر برای ذخیره نتایج
-result_dir = 'model_results'
-plot_dir = os.path.join(result_dir, 'stock_plots') 
-os.makedirs(plot_dir, exist_ok=True)
-
-# فایل ارورها
-error_file = os.path.join(result_dir, 'validation_errors.csv')
-
-# پارامترهای مدل ثابت
+# پارامترهای مدل
 batch_size = 32
 hidden_size = 200
 num_layers = 3
 dropout_rate = 0.2
 learning_rate = 0.0001
-num_epochs = 200
-patience = 20
+num_epochs = 100
+patience = 20 
 train_ratio = 0.7
 validation_ratio = 0.15
 test_ratio = 0.15
+# ایجاد فولدر برای ذخیره نتایج
+csv_file = 'test_results.csv'
+
+# اگر فایل CSV وجود ندارد، هدر را اضافه کنید
+if not os.path.exists(csv_file):
+    pd.DataFrame(columns=['Stock', 'Lookback', 'Delay', 'N_Top', 'MSE', 'MAE', 'RMSE', 'MAPE']).to_csv(csv_file, index=False)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-loss_function = torch.nn.MSELoss()
-
-# حلقه پردازش سهام
-for stock_name, stock_df in dataframes.items():
+loss_function = torch.nn.MSELoss() 
+i=0
+# ایجاد فولدر برای ذخیره نتایج
+for stock_name in dataframes.keys():
+    i+=1
     print(f"Processing stock: {stock_name}")
     
-    try:
-        # بررسی داده‌های ۲۰۱۵
-        stock_df['Date'] = pd.to_datetime(stock_df['Date'])
-        df_2015 = stock_df[(stock_df['Date'] >= '2015-01-01') & (stock_df['Date'] < '2016-01-01')]
+    # ذخیره بهترین مدل برای هر سهم
+    best_val_loss = float('inf')
+    best_model_wts = None
+    best_model_params = None
+    
+    for lookback in lookback_values:
+        for delay in delay_values:
+            for n_top in n_top_values:
+                errors = []
+                lookback_dir = f'lookback_{lookback}_delay_{delay}_n_top_{n_top}'
+                plot_dir = os.path.join(lookback_dir, 'stock_plots') 
+                os.makedirs(plot_dir, exist_ok=True)
 
-        if df_2015.empty:
-            print(f"Skipping {stock_name}: No data available in 2015.")
-            continue
+                error_file = os.path.join(lookback_dir, f'lookback_{lookback}_delay_{delay}_n_top_{n_top}.csv')
 
-        best_val_loss = float('inf')
-        best_lookback = None
-        best_delay = None
-        best_step = None
-        best_model_wts = None
+                if os.path.exists(error_file):
+                    error_df = pd.read_csv(error_file)
+                    processed_stocks = error_df['Stock'].tolist()
+                else:
+                    processed_stocks = []
 
-        # حلقه تنظیمات مختلف lookback, delay, و step
-        for lookback in lookback_values:
-            for delay in delay_values:
-                for n_top in n_tops:
-                    print(f"Trying lookback: {lookback}, delay: {delay}, n_Top_correlation: {n_top}")
+                try:
+                    # بررسی اینکه سهام داده‌ای در سال ۲۰۱۵ دارد یا خیر
+                    df = dc(dataframes[stock_name])
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df_2015 = df[(df['Date'] >= '2015-01-01') & (df['Date'] < '2016-01-01')]
 
-                    # ایجاد داده‌های شیفت شده
-                    shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', n_top, delay, start_date='2016-01-01')
-
-                    if shifted_df.empty:
-                        print(f"No data available for stock {stock_name} with lookback {lookback}, delay {delay}, and step {step}.")
+                    if len(df_2015) == 0:
+                        print(f"Skipping {stock_name}: No data available in 2015.")
                         continue
 
-                    # نرمال‌سازی داده‌ها
+                    shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', n_top, delay, start_date='2016-01-01')
+
+                    if len(shifted_df) == 0:
+                        print(f"No data available for stock {stock_name} after the start date.")
+                        continue
+
+                    shifted_df_as_np = shifted_df.to_numpy()
                     scaler = MinMaxScaler(feature_range=(0, 1))
-                    scaled_data = scaler.fit_transform(shifted_df.to_numpy())
+                    scaled_data = scaler.fit_transform(shifted_df_as_np)
 
                     # ایجاد توالی‌ها
                     X, y = create_sequences(scaled_data)
 
-                    # تقسیم داده‌ها
-                    train_idx = int(len(X) * train_ratio)
-                    val_idx = int(len(X) * (train_ratio + validation_ratio))
+                    # تقسیم داده‌ها به مجموعه‌های آموزشی، اعتبارسنجی و تست
+                    train_index = int(len(X) * train_ratio)
+                    validation_index = int(len(X) * (train_ratio + validation_ratio))
 
-                    X_train, y_train = X[:train_idx], y[:train_idx]
-                    X_val, y_val = X[train_idx:val_idx], y[train_idx:val_idx]
-                    X_test, y_test = X[val_idx:], y[val_idx:]
+                    X_train, y_train = X[:train_index], y[:train_index]
+                    X_val, y_val = X[train_index:validation_index], y[train_index:validation_index]
+                    X_test, y_test = X[validation_index:], y[validation_index:]
 
-                    # تبدیل به تنسور
+                    # شکل‌دهی دوباره داده‌ها
+                    X_train, y_train = reshape_data(X_train, y_train, lookback)
+                    X_val, y_val = reshape_data(X_val, y_val, lookback)
+                    X_test, y_test = reshape_data(X_test, y_test, lookback)
+
+                    # تبدیل داده‌ها به تنسورهای PyTorch
                     X_train, y_train = torch.tensor(X_train).float(), torch.tensor(y_train).float()
                     X_val, y_val = torch.tensor(X_val).float(), torch.tensor(y_val).float()
                     X_test, y_test = torch.tensor(X_test).float(), torch.tensor(y_test).float()
 
                     # ایجاد DataLoader
-                    train_loader = DataLoader(TimeSeriesDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-                    val_loader = DataLoader(TimeSeriesDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
-                    test_loader = DataLoader(TimeSeriesDataset(X_test, y_test), batch_size=batch_size, shuffle=False)
+                    train_dataset = TimeSeriesDataset(X_train, y_train)
+                    val_dataset = TimeSeriesDataset(X_val, y_val)
+                    test_dataset = TimeSeriesDataset(X_test, y_test)
 
-                    # ایجاد مدل
+                    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+                    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+                    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+                    # ایجاد مدل LSTM
                     input_size = X_train.shape[2]
                     model = LSTM(input_size, hidden_size, num_layers, dropout_rate).to(device)
-                    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+                    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
                     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
-                    # حلقه آموزش
                     patience_counter = 0
 
                     for epoch in range(num_epochs):
@@ -390,51 +393,93 @@ for stock_name, stock_df in dataframes.items():
 
                         if val_loss < best_val_loss:
                             best_val_loss = val_loss
-                            best_lookback = lookback
-                            best_delay = delay
-                            best_step = step
                             best_model_wts = dc(model.state_dict())
+                            best_model_params = (lookback, delay, n_top)
                             patience_counter = 0
+
+                            # ذخیره بهترین مدل
+                            model_save_path = f"best_model_{stock_name}_lookback_{lookback}_delay_{delay}_n_top_{n_top}.pth"
+                            torch.save(model, model_save_path)
+                            print(f"Saved best model for stock {stock_name} at {model_save_path}")
+
                         else:
                             patience_counter += 1
                             if patience_counter >= patience:
-                                print(f"Early stopping for {stock_name} at lookback {lookback}, delay {delay}, and step {step}.")
+                                print(f"Early stopping triggered for {stock_name}")
                                 break
 
-        # بازگردانی بهترین تنظیمات و ارزیابی روی تست
-        if best_model_wts is not None:
-            model.load_state_dict(best_model_wts)
+                except Exception as e:
+                    print(f"Error processing stock {stock_name}: {str(e)}")
 
-            # پیش‌بینی و محاسبه متریک‌ها برای تست
-            with torch.no_grad():
-                test_predictions = model(X_test.to(device)).cpu().numpy().flatten()
+    # اگر مدل بهتری پیدا شد، تست را فقط برای آن اجرا کنید
+   # اگر مدل بهتری پیدا شد، تست را فقط برای آن اجرا کنید
+    if best_val_loss < float('inf'):
+        lookback, delay, n_top = best_model_params
+        print(f"Running test on best model for stock {stock_name}: lookback={lookback}, delay={delay}, n_top={n_top}")
 
-            mse = mean_squared_error(y_test.cpu().numpy().flatten(), test_predictions)
-            mae = mean_absolute_error(y_test.cpu().numpy().flatten(), test_predictions)
-            rmse = np.sqrt(mse)
-            mape = mean_absolute_percentage_error(y_test.cpu().numpy().flatten(), test_predictions)
+        # بارگذاری کل مدل از فایل
+        model_load_path = f"best_model_{stock_name}_lookback_{lookback}_delay_{delay}_n_top_{n_top}.pth"
+        model = torch.load(model_load_path)
+        model.to(device)
 
-            # ذخیره ارورها به همراه تنظیمات
-            errors.append([stock_name, best_lookback, best_delay, best_step, mse, mae, rmse, mape])
-            new_errors_df = pd.DataFrame(errors, columns=['Stock', 'Best Lookback', 'Best Delay', 'Best Step', 'MSE', 'MAE', 'RMSE', 'MAPE'])
+        # بازتولید داده‌های تست برای تنظیمات بهترین مدل
+        shifted_df = create_time_based_sliding_window(dataframes, lookback, stock_name, '1D', n_top, delay, start_date='2016-01-01')
+        
+        if len(shifted_df) == 0:
+            print(f"No data available for stock {stock_name} after the start date.")
+            continue  # اطمینان از اینکه داده‌ها معتبر هستند
 
-            # ذخیره ارورها در فایل
-            if os.path.exists(error_file):
-                error_df = pd.read_csv(error_file)
-                combined_df = pd.concat([error_df, new_errors_df]).drop_duplicates(subset=['Stock'], keep='last')
-            else:
-                combined_df = new_errors_df
-            
-            combined_df.to_csv(error_file, index=False)
+        shifted_df_as_np = shifted_df.to_numpy()
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(shifted_df_as_np)
 
-            # رسم نمودار پیش‌بینی‌ها
-            plot_predictions(X_test, test_predictions, y_test.cpu().numpy().flatten(),
-                             f'Actual vs Predicted Close Price (Test Set) for {stock_name}',
-                             f'{stock_name}_best_lookback_{best_lookback}_delay_{best_delay}_step_{best_step}_actual_vs_predicted_close_test.png')
+        # تولید مجدد توالی‌ها برای تست
+        X, y = create_sequences(scaled_data)
 
-            print(f"Completed processing for {stock_name} with best lookback {best_lookback}, delay {best_delay}, and step {best_step}.")
+        # بازتولید داده‌های آموزشی، اعتبارسنجی و تست
+        train_index = int(len(X) * train_ratio)
+        validation_index = int(len(X) * (train_ratio + validation_ratio))
 
-    except Exception as e:
-        print(f"Error processing stock {stock_name}: {e}")
-    
-print("All stocks processed.")
+        X_train, y_train = X[:train_index], y[:train_index]
+        X_val, y_val = X[train_index:validation_index], y[train_index:validation_index]
+        X_test, y_test = X[validation_index:], y[validation_index:]
+
+        # شکل‌دهی دوباره داده‌ها با استفاده از lookback انتخاب شده
+        X_train, y_train = reshape_data(X_train, y_train, lookback)
+        X_val, y_val = reshape_data(X_val, y_val, lookback)
+        X_test, y_test = reshape_data(X_test, y_test, lookback)
+
+        # تبدیل داده‌ها به تنسورهای PyTorch
+        X_train, y_train = torch.tensor(X_train).float(), torch.tensor(y_train).float()
+        X_val, y_val = torch.tensor(X_val).float(), torch.tensor(y_val).float()
+        X_test, y_test = torch.tensor(X_test).float(), torch.tensor(y_test).float()
+
+        # پیش‌بینی روی داده‌های تست
+        with torch.no_grad():
+            test_predictions = model(X_test.to(device)).cpu().numpy().flatten()
+
+        # محاسبه متریک‌ها
+        mse = mean_squared_error(y_test.cpu().numpy().flatten(), test_predictions)
+        mae = mean_absolute_error(y_test.cpu().numpy().flatten(), test_predictions)
+        rmse = np.sqrt(mse)
+        mape = mean_absolute_percentage_error(y_test.cpu().numpy().flatten(), test_predictions)
+
+        print(f"Test results for stock {stock_name}: MSE={mse}, MAE={mae}, RMSE={rmse}, MAPE={mape}")
+
+        # ذخیره نتایج در فایل CSV
+        result = {
+            'Stock': stock_name,
+            'Lookback': lookback,
+            'Delay': delay,
+            'N_Top': n_top,
+            'MSE': mse,
+            'MAE': mae,
+            'RMSE': rmse,
+            'MAPE': mape
+        }
+        results_df = pd.DataFrame([result])
+        results_df.to_csv(csv_file, mode='a', header=False, index=False)
+
+    else:
+        print(f"No valid model found for testing stock {stock_name}.")
+
