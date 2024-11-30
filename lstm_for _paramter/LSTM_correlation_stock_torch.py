@@ -12,6 +12,22 @@ from copy import deepcopy as dc
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import random
 import concurrent.futures
+def save_test_results_to_csv(stock_name, lookback, delay, n_top, mse, mae, rmse, mape, filename="test_results.csv"):
+    data = {
+        "Stock": [stock_name],
+        "Lookback": [lookback],
+        "Delay": [delay],
+        "N_Top": [n_top],
+        "MSE": [mse],
+        "MAE": [mae],
+        "RMSE": [rmse],
+        "MAPE": [mape]
+    }
+    df = pd.DataFrame(data)
+    with open(filename, mode='a') as f:
+        df.to_csv(f, header=f.tell() == 0, index=False)
+
+
 def split_data(X, y, train_ratio=0.7, validation_ratio=0.15):
     # تقسیم داده‌ها به آموزش و بقیه (اعتبارسنجی و تست)
     X_train, X_temp, y_train, y_temp = train_test_split(X, y, train_size=train_ratio, shuffle=True)
@@ -22,6 +38,15 @@ def split_data(X, y, train_ratio=0.7, validation_ratio=0.15):
 
     return X_train, y_train, X_val, y_val, X_test, y_test
 # بارگذاری مدل با بهترین پارامترها و آماده‌سازی داده‌های تست
+# بارگذاری فایل min_error_per_stock.csv برای مقداردهی اولیه delay
+min_error_df = pd.read_csv("./min_error_per_stock.csv")  # مطمئن شوید که مسیر فایل درست است
+
+# تابع برای دریافت مقدار delay از فایل بر اساس نام سهام
+def get_initial_delay(stock_name, min_error_df):
+    row = min_error_df[min_error_df["Stock"] == stock_name]
+    if not row.empty:
+        return int(row["Best Delay"].values[0])  # تبدیل مقدار به عدد صحیح
+    return -3  # مقدار پیش‌فرض در صورت نبودن سهام در فایل
 
 
 # تنظیم دانه تصادفی
@@ -246,7 +271,6 @@ class TimeSeriesDataset(Dataset):
         return self.X[i], self.y[i]
 
 
-# Training and Validation Functions
 def train_one_epoch(epoch, model, train_loader, optimizer, loss_function, device):
     model.train()
     running_loss = 0.0
@@ -256,6 +280,10 @@ def train_one_epoch(epoch, model, train_loader, optimizer, loss_function, device
         output = model(x_batch)
         loss = loss_function(output, y_batch)
         loss.backward()
+        
+        # Apply gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         running_loss += loss.item()
         if (batch_index + 1) % 100 == 0:
@@ -359,13 +387,24 @@ def generate_initial_parameters(param_optimizer):
     return lookback, delay, n_top
 
 # تابعی برای تغییر جزئی پارامترهای بهترین ترکیب قبلی
-def mutate_parameters(best_params, scale=0.1):
+def mutate_parameters(best_params, scale=0.3):
     lookback, delay, n_top = best_params
     lookback = max(20, min(40, int(lookback + np.random.normal(0, scale * lookback))))
     delay = max(-5, min(-1, int(delay + np.random.normal(0, scale * abs(delay)))))
     n_top = max(2, min(4, int(n_top + np.random.normal(0, scale * n_top))))
     return lookback, delay, n_top
-   
+def initialize_weights(m):
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.LSTM):
+        for name, param in m.named_parameters():
+            if 'weight' in name:
+                nn.init.xavier_uniform_(param)
+            elif 'bias' in name:
+                nn.init.zeros_(param)
+
 
 # تعریف Dataset برای سری زمانی
 class TimeSeriesDataset(Dataset):
@@ -386,7 +425,9 @@ def train_model_for_all_stocks(dataframes, param_optimizer, num_epochs=100, pati
         
         best_loss = float('inf')
         best_model_state = None
-        best_params = (30, -3, 3)  # مقادیر اولیه برای lookback، delay و n_top
+        initial_delay = get_initial_delay(stock_name, min_error_df)
+        print(initial_delay)
+        best_params = (30, initial_delay, 3)  # مقداردهی اولیه با توجه به مقدار delay از فایل
         no_improve_count = 0
         cache = {}
 
@@ -411,16 +452,28 @@ def train_model_for_all_stocks(dataframes, param_optimizer, num_epochs=100, pati
 
             X, y = create_sequences(scaled_data)
             X_train, y_train, X_val, y_val, X_test, y_test = split_data(X, y, train_ratio=0.7, validation_ratio=0.15)
+        # After reshaping data
             X_train, y_train = reshape_data(X_train, y_train, lookback)
             X_val, y_val = reshape_data(X_val, y_val, lookback)
             X_test, y_test = reshape_data(X_test, y_test, lookback)
 
+            # Add these assertions to check for NaN values in the data
+            assert not np.isnan(X_train).any(), "NaN values found in training data"
+            assert not np.isnan(X_val).any(), "NaN values found in validation data"
+            assert not np.isnan(X_test).any(), "NaN values found in test data"
+            assert not np.isnan(y_train).any(), "NaN values found in training labels"
+            assert not np.isnan(y_val).any(), "NaN values found in validation labels"
+            assert not np.isnan(y_test).any(), "NaN values found in test labels"
+
+            # Continue with creating DataLoader objects
             train_loader = DataLoader(TimeSeriesDataset(torch.tensor(X_train).float(), torch.tensor(y_train).float()), batch_size=32, shuffle=True)
             val_loader = DataLoader(TimeSeriesDataset(torch.tensor(X_val).float(), torch.tensor(y_val).float()), batch_size=32, shuffle=False)
             test_loader = DataLoader(TimeSeriesDataset(torch.tensor(X_test).float(), torch.tensor(y_test).float()), batch_size=32, shuffle=False)
 
             model = LSTM(X_train.shape[2], 200, 3, 0.2).to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+            # Initialize the weights of the model
+            model.apply(initialize_weights)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)  # Try a smaller learning rate
             loss_function = torch.nn.MSELoss()
 
             for i in range(5):
@@ -472,7 +525,7 @@ def save_results_to_csv(stock_name, epoch, lookback, delay, n_top, val_loss, mse
 
 
 class EarlyStopping:
-    def __init__(self, patience=5, min_delta=0):
+    def __init__(self, patience=30, min_delta=0):
         """
         :param patience: تعداد دوره‌هایی که بهبود نداشته باشد تا متوقف شود
         :param min_delta: کمترین تغییر مورد انتظار برای در نظر گرفتن بهبود
@@ -513,19 +566,4 @@ def test_model(model, test_loader, device):
 
 # ایجاد و آموزش مدل بهینه‌ساز پارامترها
 param_optimizer = ParameterOptimizer()
-train_model_for_all_stocks(dataframes, param_optimizer, num_epochs=100, patience=10, top_n=5)
-def save_test_results_to_csv(stock_name, lookback, delay, n_top, mse, mae, rmse, mape, filename="test_results.csv"):
-    data = {
-        "Stock": [stock_name],
-        "Lookback": [lookback],
-        "Delay": [delay],
-        "N_Top": [n_top],
-        "MSE": [mse],
-        "MAE": [mae],
-        "RMSE": [rmse],
-        "MAPE": [mape]
-    }
-    df = pd.DataFrame(data)
-    with open(filename, mode='a') as f:
-        df.to_csv(f, header=f.tell() == 0, index=False)
-
+train_model_for_all_stocks(dataframes, param_optimizer, num_epochs=100, patience=30, top_n=5)
